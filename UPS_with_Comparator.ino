@@ -21,7 +21,7 @@
 #define POP_MODE 3
 #define EEPROM_ADDR 0x10
 
-volatile byte Mode = 0 , modeDisplayed = 0, blinkNo = 0, Prog_Trigger = 0 ;
+volatile byte Mode = 0 , modeDisplayed = 0, blinkNo = 0, Prog_Trigger = 0, ProgFlag = 0 ;
 
 
 ISR(AC0_AC_vect)
@@ -33,10 +33,10 @@ ISR(AC0_AC_vect)
     AC0_OUTPUT = HIGH;
   }
   else {
-    VREF.CTRLA = VREF_DAC0REFSEL_4V34_gc;
+    VREF.CTRLA = VREF_DAC0REFSEL_2V5_gc;
     AC0_OUTPUT = LOW;
   }
-  if (digitalRead(PRGM_PIN) == LOW)//working mode
+  if (ProgFlag == 0)//working mode
   {
     //flag for normal working mode
     //    Serial.println("PRGM_PIN low");
@@ -118,7 +118,7 @@ ISR(AC0_AC_vect)
 void AC0_init (void)
 {
   /* Negative input uses internal reference - voltage reference should be enabled */
-  VREF.CTRLA = VREF_DAC0REFSEL_4V34_gc ;  /* Voltage reference at 4.34V */
+  VREF.CTRLA = VREF_DAC0REFSEL_2V5_gc ;  /* changed for this version -> Voltage reference to 2.5V */
   VREF.CTRLB = VREF_DAC0REFEN_bm;        /* AC0 DACREF reference enable: enabled */
   /*Select proper inputs for comparator*/
   AC0.MUXCTRLA = AC_MUXPOS_PIN0_gc | AC_MUXNEG_VREF_gc; /* Negative Input - Voltage Reference */
@@ -162,6 +162,7 @@ void loop() {
 
   if (digitalRead(PRGM_PIN) == LOW ) // Working mode
   {
+    ProgFlag = 0;
     //    Serial.println(Mode);
     if ( modeDisplayed)
     {
@@ -186,6 +187,7 @@ void loop() {
     else if (Prog_Trigger == 0)
     {
       Mode = EEPROM.read(EEPROM_ADDR);
+      AC0.CTRLA = AC_ENABLE_bm | AC_HYSMODE_50mV_gc | AC_INTMODE_BOTHEDGE_gc ;
       AC0_AC_vect();
 
     }
@@ -194,14 +196,19 @@ void loop() {
   }
   else // Program mode
   {
-    if (Prog_Trigger)
+    delay(400);
+    if (digitalRead(PRGM_PIN) == HIGH )
     {
-      Mode = 0;
-      AC0.CTRLA = AC_ENABLE_bm | AC_HYSMODE_50mV_gc | AC_INTMODE_NEGEDGE_gc ;
-      digitalWrite(PNP_OUT, LOW);
-      digitalWrite(NPN_OUT, LOW);
-      digitalWrite(LED_PIN, LOW);
-      Prog_Trigger = 0;
+      if (Prog_Trigger)
+      {
+        ProgFlag = 1;
+        Mode = 0;
+        AC0.CTRLA = AC_ENABLE_bm | AC_HYSMODE_50mV_gc | AC_INTMODE_NEGEDGE_gc ;
+        digitalWrite(PNP_OUT, LOW);
+        digitalWrite(NPN_OUT, LOW);
+        digitalWrite(LED_PIN, LOW);
+        Prog_Trigger = 0;
+      }
     }
 
   }
