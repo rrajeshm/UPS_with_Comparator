@@ -13,7 +13,7 @@
  */
 #include <EEPROM.h>
 
-#define PRGM_PIN A2
+#define PRGM_PIN A0
 #define LED_PIN A3
 #define SIGNAL_IN A7 //A1
 #define PNP_OUT A6
@@ -29,11 +29,11 @@ ISR(AC0_AC_vect)
   volatile byte AC0_OUTPUT;
   
   if (AC0.STATUS & AC_STATE_bm) {
-    VREF.CTRLA = VREF_DAC0REFSEL_1V5_gc;
+    DAC0.DATA = 0x8F ; //1.6 v  //0x9A;                              //VREF.CTRLA = VREF_DAC0REFSEL_1V5_gc;
     AC0_OUTPUT = HIGH;
   }
   else {
-    VREF.CTRLA = VREF_DAC0REFSEL_2V5_gc;
+    DAC0.DATA = 0xA3 ; //1.4 v //0xFF;                             //VREF.CTRLA = VREF_DAC0REFSEL_2V5_gc;
     AC0_OUTPUT = LOW;
   }
   if (ProgFlag == 0)//working mode
@@ -120,8 +120,13 @@ void AC0_init (void)
   /* Negative input uses internal reference - voltage reference should be enabled */
   VREF.CTRLA = VREF_DAC0REFSEL_2V5_gc ;  /* changed for this version -> Voltage reference to 2.5V */
   VREF.CTRLB = VREF_DAC0REFEN_bm;        /* AC0 DACREF reference enable: enabled */
+
+  /* DAC - Digital to Analog Converter */
+  DAC0.CTRLA = DAC_ENABLE_bm;            /* DAC Enable bit mask. */
+  DAC0.DATA = 0xA3; //128;
+
   /*Select proper inputs for comparator*/
-  AC0.MUXCTRLA = AC_MUXPOS_PIN0_gc | AC_MUXNEG_VREF_gc; /* Negative Input - Voltage Reference */
+  AC0.MUXCTRLA = AC_MUXPOS_PIN0_gc | AC_MUXNEG_DAC_gc ;  /* DAC output */
 
   AC0.CTRLA = AC_ENABLE_bm              /* Enable analog comparator */
               | AC_HYSMODE_50mV_gc      /* Enable hysteresis @50mV  */
