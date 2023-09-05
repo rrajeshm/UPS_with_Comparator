@@ -13,7 +13,7 @@
  */
 #include <EEPROM.h>
 
-#define PRGM_PIN A0
+#define PRGM_PIN A6
 #define LED_PIN A3
 #define SIGNAL_IN A7 //A1
 #define PNP_OUT A2 //A6
@@ -23,8 +23,40 @@
 #define CALIBRATION_ADDR 0x10
 // DAC ref calculation 2500/256 = 9.765 | A3->163 * 9.756 =1590  | 8F->143 * 9.756 =1395
 
-volatile byte Mode = 0 , modeDisplayed = 0, blinkNo = 0, Prog_Trigger = 0, ProgFlag = 0,CProgFlag = 0 ;
+volatile byte Mode = 0 , modeDisplayed = 0, blinkNo = 0, Prog_Trigger = 0, ProgFlag = 0, CProgFlag = 0 ;
 volatile byte Calibrated = 0 , DAC_HIGH = 0, DAC_LOW = 0;
+volatile uint16_t adcVal, lowCount = 0, highCount = 0;
+volatile boolean pgmFlag = false;
+
+ISR(ADC0_RESRDY_vect)
+{
+  /* Clear flag by writing '1': */
+  ADC0.INTFLAGS = ADC_RESRDY_bm;
+  adcVal = ADC0.RES;
+
+  if (adcVal <= 500)
+  {
+    lowCount++;
+    highCount = 0;
+  }
+  else
+  {
+    lowCount = 0;
+    highCount++;
+  }
+
+  if (highCount >= 1000 )
+  {
+    pgmFlag = true;
+    highCount = 0;
+  }
+
+  if (lowCount >= 1000 )
+  {
+    pgmFlag = false;
+    lowCount = 0;
+  }
+}
 
 ISR(AC0_AC_vect)
 {
@@ -47,13 +79,11 @@ ISR(AC0_AC_vect)
   if (ProgFlag == 0)//working mode
   {
     //flag for normal working mode
-    //    Serial.println("PRGM_PIN low");
-
     switch (Mode)
     {
       case 1:
         {
-          if (AC0_OUTPUT) //(AC0.STATUS & AC_STATE_bm) //(digitalRead(SIGNAL_IN) == HIGH)
+          if (AC0_OUTPUT)  //(digitalRead(SIGNAL_IN) == HIGH)
           {
             digitalWrite(PNP_OUT, HIGH);
             digitalWrite(LED_PIN, HIGH);
@@ -142,21 +172,39 @@ void AC0_init (void)
   AC0.INTCTRL = AC_CMP_bm;              /* Analog Comparator 0 Interrupt enabled */
 }
 
+void ADC0_init(void)
+{
+  ADC0.CTRLC = ADC_PRESC_DIV128_gc /* CLK_PER divided by 128 */
+               | ADC_REFSEL_VDDREF_gc; /* VDD */ //
+  ADC0.CTRLA = ADC_ENABLE_bm /* ADC Enable: enabled */
+               | ADC_RESSEL_10BIT_gc; /* 10-bit mode */
+  /* Select ADC channel */
+  ADC0.MUXPOS = ADC_MUXPOS_AIN6_gc;
+  /*Eanble Interrupt*/
+  ADC0.INTCTRL = ADC_RESRDY_bm ; //0x01;
+  /* Enable FreeRun mode */
+  ADC0.CTRLA |= ADC_FREERUN_bm;
+}
 
 
 void setup() {
   //  Serial.begin(57600);
   byte CalVal;
-  delay(5000);
+  delay(500);
   /* Positive Input - Disable digital input buffer */
   PORTA.PIN7CTRL = PORT_ISC_INPUT_DISABLE_gc; //For analog SIGNAL_IN
-  pinMode(PRGM_PIN, INPUT_PULLUP);
+  /* Disable digital input buffer */
+  PORTA.PIN6CTRL |= PORT_ISC_INPUT_DISABLE_gc;
+  /* Disable pull-up resistor */
+  PORTA.PIN6CTRL &= ~PORT_PULLUPEN_bm;
+
   pinMode(PNP_OUT, OUTPUT);
   pinMode(NPN_OUT, OUTPUT);
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(PNP_OUT, LOW);
   digitalWrite(NPN_OUT, LOW);
   AC0_init();
+  ADC0_init();
 
   CalVal = EEPROM.read(CALIBRATION_ADDR);
   if ((CalVal == 0xFF) || (CalVal == 0x0))
@@ -167,6 +215,7 @@ void setup() {
   else {
     Calibrated = 1;
     DAC_HIGH = CalVal;
+    DAC_LOW = (byte)(DAC_HIGH * 0.88 );
   }
 
   Mode = EEPROM.read(EEPROM_ADDR);
@@ -180,7 +229,8 @@ void setup() {
   if (digitalRead(PRGM_PIN) == HIGH)
     modeDisplayed = 1;
   sei();            /*Global interrupts enabled */
-
+  /* Start ADC conversion */
+  ADC0.COMMAND = ADC_STCONV_bm;
 }
 
 void Process_Calibration()
@@ -197,16 +247,16 @@ void Process_Calibration()
       PORTA.OUTCLR |= PIN3_bm;
   }
   PORTA.OUTCLR |= PIN3_bm;
-  CProgFlag =0;
+  CProgFlag = 0;
   DAC_data--;
   EEPROM.write(CALIBRATION_ADDR, DAC_data);
   DAC_HIGH =  EEPROM.read(CALIBRATION_ADDR);
   DAC_LOW = (byte)(DAC_HIGH * 0.88 );
 
   while (blinkCount--) { ///  while(true){  */if you need continuous blink once calibrated/*
-    digitalWrite(LED_PIN, HIGH);
+    PORTA.OUTSET |= PIN3_bm; //digitalWrite(LED_PIN, HIGH);
     delay(250);
-    digitalWrite(LED_PIN, LOW);
+    PORTA.OUTCLR |= PIN3_bm; //digitalWrite(LED_PIN, LOW);
     delay(750);
   }
 }
@@ -214,23 +264,16 @@ void Process_Calibration()
 
 void loop() {
   // put your main code here, to run repeatedly:
-  if ((!Calibrated ) && (digitalRead(PRGM_PIN) == HIGH ))
+  if ((!Calibrated ) && pgmFlag )
   {
-    byte count = 0;
-    while ((digitalRead(PRGM_PIN) == HIGH  ) && (count < 10))
-    {
-      delay(200); count++;
-    }
-    CProgFlag =1;
-    if (digitalRead(PRGM_PIN) == HIGH )
-      Process_Calibration();
+    CProgFlag = 1;
+    Process_Calibration();
   }
   else if (Calibrated)
   {
-    if (digitalRead(PRGM_PIN) == LOW ) // Working mode
+    if (!pgmFlag) // Working mode : pgmFlag=false
     {
       ProgFlag = 0;
-      //    Serial.println(Mode);
       if ( modeDisplayed)
       {
         delay(2000);
@@ -238,16 +281,16 @@ void loop() {
 
         if ( Mode == 6)
         {
-           EEPROM.write(CALIBRATION_ADDR, 0xFF);// while(true); //continuous while loop
-           Calibrated = 0;
-           EEPROM.write(EEPROM_ADDR, POP_MODE);
-            while(true) // blink LED to show that its looping in calibration reset
-            {
-               PORTA.OUTSET |= PIN3_bm;
-               delay(50);
-               PORTA.OUTCLR |= PIN3_bm;
-               delay(300);
-            }
+          EEPROM.write(CALIBRATION_ADDR, 0xFF);// while(true); //continuous while loop
+          Calibrated = 0;
+          EEPROM.write(EEPROM_ADDR, POP_MODE);
+          while (true) // blink LED to show that its looping in calibration reset
+          {
+            PORTA.OUTSET |= PIN3_bm;
+            delay(50);
+            PORTA.OUTCLR |= PIN3_bm;
+            delay(300);
+          }
         }
         else if (Mode > 4)
           Mode = 4;
@@ -257,9 +300,9 @@ void loop() {
 
         //      Serial.println(blinkNo);
         while (blinkNo--) {
-          digitalWrite(LED_PIN, HIGH);
+          PORTA.OUTSET |= PIN3_bm; //digitalWrite(LED_PIN, HIGH);
           delay(250);
-          digitalWrite(LED_PIN, LOW);
+          PORTA.OUTCLR |= PIN3_bm; //digitalWrite(LED_PIN, LOW);
           delay(750);
         }
         delay(5000);
@@ -278,30 +321,23 @@ void loop() {
 
       Prog_Trigger = 1;
     }
-    else // Program mode
+    else // Program mode : pgmFlag=true
     {
-      delay(400);
-      if (digitalRead(PRGM_PIN) == HIGH )
+      if (Prog_Trigger)
       {
-        if (Prog_Trigger)
-        {
-          ProgFlag = 1;
-          Mode = 0;
-          DAC0.CTRLA = DAC_ENABLE_bm;            /* DAC Enable bit mask. */
-          DAC0.DATA = 0xA3; //163;
-          AC0.CTRLA = AC_ENABLE_bm | AC_INTMODE_NEGEDGE_gc | AC_HYSMODE_50mV_gc ;
-          //        AC0.MUXCTRLA = AC_MUXPOS_PIN0_gc | AC_MUXNEG_VREF_gc; /* Negative Input - Voltage Reference */
-          AC0.MUXCTRLA = AC_MUXPOS_PIN0_gc | AC_MUXNEG_DAC_gc ;  /* DAC output */
-          AC0.INTCTRL = AC_CMP_bm;
-          digitalWrite(PNP_OUT, LOW);
-          digitalWrite(NPN_OUT, LOW);
-          digitalWrite(LED_PIN, LOW);
-          Prog_Trigger = 0;
-        }
+        ProgFlag = 1;
+        Mode = 0;
+        DAC0.CTRLA = DAC_ENABLE_bm;            /* DAC Enable bit mask. */
+        DAC0.DATA = 0xA3; //163;
+        AC0.CTRLA = AC_ENABLE_bm | AC_INTMODE_NEGEDGE_gc | AC_HYSMODE_50mV_gc ;
+        AC0.MUXCTRLA = AC_MUXPOS_PIN0_gc | AC_MUXNEG_DAC_gc ;  /* DAC output */
+        AC0.INTCTRL = AC_CMP_bm;
+        digitalWrite(PNP_OUT, LOW);
+        digitalWrite(NPN_OUT, LOW);
+        digitalWrite(LED_PIN, LOW);
+        Prog_Trigger = 0;
       }
+
     }
   }
-
-  //AC_INTMODE_NEGEDGE_gc = (0x02<<4),  /* Negative Edge */
-  //AC_INTMODE_POSEDGE_gc = (0x03<<4),  /* Positive Edge */
 }
